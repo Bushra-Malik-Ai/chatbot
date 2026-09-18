@@ -4,8 +4,6 @@ from app.database import Base
 
 
 class User(Base):
-    """Directory records — the people the chatbot manages. NOT the same as
-    an admin account. Being in this table does not grant chatbot access."""
     __tablename__ = "users"
     __table_args__ = {"extend_existing": True}
 
@@ -17,9 +15,6 @@ class User(Base):
 
 
 class AdminUser(Base):
-    """Accounts allowed to log in and operate the chatbot. Separate from
-    User on purpose: directory membership and chatbot access are different
-    permissions."""
     __tablename__ = "admin_users"
     __table_args__ = {"extend_existing": True}
 
@@ -29,8 +24,6 @@ class AdminUser(Base):
 
 
 class AuditLog(Base):
-    """Every chat command that was attempted, who sent it, and the outcome.
-    Required for any tool that mutates data on someone's behalf."""
     __tablename__ = "audit_log"
     __table_args__ = {"extend_existing": True}
 
