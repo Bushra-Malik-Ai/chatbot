@@ -17,6 +17,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 def seed_if_empty(db: Session):
     if db.query(models.User).count() == 0:
         db.add_all([
@@ -29,64 +31,56 @@ def seed_if_empty(db: Session):
         ])
         db.commit()
 
-    if db.query(models.AdminUser).count() == 0:
-        # Default admin account for local/demo use only.
-        # CHANGE THIS PASSWORD before using this anywhere but your own machine.
-        db.add(models.AdminUser(
-            email="admin@company.com",
-            hashed_password=security.hash_password("ChangeMe123!"),
-        ))
-        db.commit()
-
 
 @app.on_event("startup")
 def on_startup():
     db = next(get_db())
     seed_if_empty(db)
 
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
-@app.get("/")
-def read_root():
-    return FileResponse("app/static/index.html")
 
 # ---------- Auth dependency ----------
-
+# "Auto login": access is granted purely because the email already exists
+# in the directory (Users table) — matches the brief literally. No password.
 
 def get_current_admin(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
-) -> models.AdminUser:
-    """Protects a route: requires 'Authorization: Bearer <token>'."""
+) -> models.User:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
     token = authorization.removeprefix("Bearer ").strip()
     email = security.decode_access_token(token)
     if not email:
-        raise HTTPException(status_code=401, detail="Invalid or expired token.")
-    admin = db.query(models.AdminUser).filter(models.AdminUser.email == email).first()
-    if not admin:
-        raise HTTPException(status_code=401, detail="Admin account no longer exists.")
-    return admin
+        raise HTTPException(status_code=401, detail="Invalid or expired session.")
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User no longer exists in the directory.")
+    return user
 
 
 # ---------- Public routes ----------
 
 @app.post("/api/login", response_model=schemas.LoginResponse)
 def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
-    admin = db.query(models.AdminUser).filter(models.AdminUser.email == payload.email).first()
-    if not admin or not security.verify_password(payload.password, admin.hashed_password):
-        return schemas.LoginResponse(success=False, message="Invalid email or password.")
-    token = security.create_access_token(admin.email)
+    """Auto login: succeeds only if the email already exists in the directory."""
+    user = db.query(models.User).filter(
+        models.User.email.ilike(payload.email)
+    ).first()
+    if not user:
+        return schemas.LoginResponse(
+            success=False,
+            message=f'No user found with "{payload.email}". Ask an admin to add you first.',
+        )
+    token = security.create_access_token(user.email)
     return schemas.LoginResponse(
-        success=True, message="Signed in.", access_token=token, admin_email=admin.email
+        success=True, message="Signed in.", access_token=token, admin_email=user.email
     )
 
 
-# ---------- Protected routes (require a valid admin token) ----------
+# ---------- Protected routes (require a valid session token) ----------
 
 @app.get("/api/users", response_model=list[schemas.UserOut])
-def list_users(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+def list_users(db: Session = Depends(get_db), admin: models.User = Depends(get_current_admin)):
     return db.query(models.User).order_by(models.User.id).all()
 
 
@@ -94,7 +88,7 @@ def list_users(db: Session = Depends(get_db), admin: models.AdminUser = Depends(
 def chat(
     payload: schemas.ChatRequest,
     db: Session = Depends(get_db),
-    admin: models.AdminUser = Depends(get_current_admin),
+    admin: models.User = Depends(get_current_admin),
 ):
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
@@ -113,7 +107,7 @@ def chat(
 
 
 @app.get("/api/audit-log", response_model=list[schemas.AuditEntryOut])
-def audit_log(db: Session = Depends(get_db), admin: models.AdminUser = Depends(get_current_admin)):
+def audit_log(db: Session = Depends(get_db), admin: models.User = Depends(get_current_admin)):
     entries = (
         db.query(models.AuditLog)
         .order_by(models.AuditLog.id.desc())
@@ -129,3 +123,10 @@ def audit_log(db: Session = Depends(get_db), admin: models.AdminUser = Depends(g
     ]
 
 
+# ---------- Frontend ----------
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+@app.get("/")
+def serve_index():
+    return FileResponse("app/static/index.html")
